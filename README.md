@@ -4,7 +4,7 @@ kSZ analysis pipeline for the CAMELS TNG50 simulations
 
 ## Goal
 
-Reproduce the kSZ measurement of Hadzhiyska (https://arxiv.org/pdf/2407.07152), which were performed on TNG300 simulations, on CAMELS TNG50 simulations. I bin by halo mass, to study how AGN/SN feedback shapes the gas distribution around LRG-like galaxies.
+Reproduce the kSZ measurement of Hadzhiyska et. al (https://arxiv.org/pdf/2407.07152), (performed on TNG300 simulations), on CAMELS TNG50 simulations. Binned by halo mass, to study how AGN/SN feedback shapes the gas distribution around LRG-like galaxies.
 
 ## Approach
 
