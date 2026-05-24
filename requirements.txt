@@ -1,0 +1,9 @@
+numpy
+scipy
+h5py
+astropy
+matplotlib
+numba
+tqdm
+hdf5plugin
+jupyter
