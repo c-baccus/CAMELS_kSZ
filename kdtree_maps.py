@@ -50,17 +50,17 @@ def compute_per_cell_quantities(gas, hubble_h, scale_factor):
     dict with keys 'n_e_V', 'V_cm3', 'v_cgs', 'pos_ckpc_h'.
     """
     # Compute cell mass in grams
-    M_cell_g = gas['Masses'] * 1e10 * SOLAR_MASS_G / hubble_h  # grams
+    M_cell_g = gas['Masses'].astype(np.float64) * 1e10 * SOLAR_MASS_G / hubble_h  # grams
 
     # Compute electron count per cell (dimensionless, electron number)
     n_e_V = gas['ElectronAbundance'] * X_H * M_cell_g / M_P
 
     # Compute cell volume in (ckpc/h)^3, then convert to cm^3 (physical)
-    V_sim = gas['Masses'] / gas['Density']                    # (ckpc/h)^3, sim units
+    V_sim = gas['Masses'].astype(np.float64) / gas['Density'].astype(np.float64)    # (ckpc/h)^3, sim units
     V_cm3 = V_sim * (scale_factor * KPC_TO_CM / hubble_h)**3  # cm^3
 
     # Compute peculiar velocity in cm/s (shape (N,3))
-    v_cgs = gas['Velocities'] * np.sqrt(scale_factor) * 1e5   # cm/s
+    v_cgs = gas['Velocities'].astype(np.float64) * np.sqrt(scale_factor) * 1e5   # cm/s
 
     # Particle positions (ckpc/h)
     pos_ckpc_h = gas['Coordinates']
