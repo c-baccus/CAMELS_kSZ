@@ -1,0 +1,217 @@
+"""
+06_combine_sims.py
+
+Combine all 27 CV simulations into one dataset and compute the final
+mass-binned CAP profile with proper error bars.
+"""
+import os
+import glob
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from scipy.ndimage import gaussian_filter
+from astropy.cosmology import FlatLambdaCDM
+
+# ---- Configuration ----
+OUTPUT_BASE = "outputs"
+N_SIMS = 27
+BEAM_FWHM_ARCMIN = 1.6
+THETA_D_ARCMIN = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0])
+T_CMB_UK = 2.725e6
+
+# Mass bins
+MASS_BIN_EDGES = [(12.5, 13.0), (13.0, 13.5), (13.5, 14.5)]
+MASS_BIN_LABELS = [
+    r"$12.5 \leq \log_{10} M_h < 13.0$",
+    r"$13.0 \leq \log_{10} M_h < 13.5$",
+    r"$13.5 \leq \log_{10} M_h < 14.5$",
+]
+MASS_BIN_COLORS = ['tab:blue', 'tab:orange', 'tab:green']
+
+
+def make_cap_filter(n_pix, pixel_arcmin, theta_d_arcmin):
+    """Build a CAP filter centered on map center. Disk minus annulus."""
+    cx, cy = n_pix / 2.0, n_pix / 2.0
+    y, x = np.indices((n_pix, n_pix), dtype=float)
+    r_arcmin = np.sqrt((x - cx)**2 + (y - cy)**2) * pixel_arcmin
+    
+    W = np.zeros((n_pix, n_pix))
+    W[r_arcmin <= theta_d_arcmin] = 1.0
+    W[(r_arcmin > theta_d_arcmin) & (r_arcmin <= np.sqrt(2) * theta_d_arcmin)] = -1.0
+    return W
+
+
+def cap_scalar(map_2d, pixel_arcmin, theta_d):
+    """CAP at a single aperture — one scalar."""
+    W = make_cap_filter(map_2d.shape[0], pixel_arcmin, theta_d)
+    return np.sum(map_2d * W)
+
+
+def main():
+    # ===== STEP 1: Load all sims =====
+    print("Loading all 27 CV sims...")
+    all_b_xy = []
+    all_b_yz = []
+    all_b_zx = []
+    all_tau_xy = []
+    all_tau_yz = []
+    all_tau_zx = []
+    all_m_halo = []
+    all_r_halo = []
+    has_r_halo = True
+    all_pos = []
+    all_vel = []
+    
+    for i in range(N_SIMS):
+        path = os.path.join(OUTPUT_BASE, f"CV_{i}", "all_maps.npz")
+        if not os.path.exists(path):
+            print(f"  CV_{i}: MISSING, skipping")
+            continue
+        d = np.load(path)
+        all_b_xy.append(d['b_xy'])
+        all_b_yz.append(d['b_yz'])
+        all_b_zx.append(d['b_zx'])
+        all_tau_xy.append(d['tau_xy'])
+        all_tau_yz.append(d['tau_yz'])
+        all_tau_zx.append(d['tau_zx'])
+        all_m_halo.append(d['m_halo_msun'])
+        if 'r_halo_ckpc_h' in d.files:
+            all_r_halo.append(d['r_halo_ckpc_h'])
+        else:
+            has_r_halo = False
+        all_pos.append(d['pos'])
+        all_vel.append(d['vel'])
+        if i == 0:
+            n_pix = int(d['n_pix'][0])
+            radius_ckpc_h = float(d['radius_ckpc_h'][0])
+            redshift = float(d['redshift'][0])
+            hubble_h = float(d['hubble_h'][0])
+            scale_factor = float(d['scale_factor'][0])
+    
+    # Concatenate
+    b_xy = np.concatenate(all_b_xy)
+    b_yz = np.concatenate(all_b_yz)
+    b_zx = np.concatenate(all_b_zx)
+    tau_xy = np.concatenate(all_tau_xy)
+    tau_yz = np.concatenate(all_tau_yz)
+    tau_zx = np.concatenate(all_tau_zx)
+    m_halo = np.concatenate(all_m_halo)
+    r_halo = np.concatenate(all_r_halo) if has_r_halo else None
+    pos = np.concatenate(all_pos)
+    vel = np.concatenate(all_vel)
+    
+    n_total = len(m_halo)
+    print(f"\nTotal: {n_total} galaxies across {len(all_b_xy)} sims")
+    print(f"log10(M_halo) range: [{np.log10(m_halo).min():.2f}, {np.log10(m_halo).max():.2f}]")
+    print(f"log10(M_halo) median: {np.median(np.log10(m_halo)):.2f}")
+    
+    # ===== STEP 2: Compute pixel scale =====
+    cosmo = FlatLambdaCDM(H0=hubble_h * 100, Om0=0.3)
+    d_A_mpc = cosmo.angular_diameter_distance(redshift).value
+    pixel_size_ckpc_h = (2 * radius_ckpc_h) / n_pix
+    pixel_size_mpc = pixel_size_ckpc_h * scale_factor / hubble_h / 1000
+    pixel_arcmin = (pixel_size_mpc / d_A_mpc) * (180 / np.pi) * 60
+    print(f"\nPixel scale: {pixel_arcmin:.4f} arcmin/pix")
+    
+    # Beam smoothing in pixels
+    beam_sigma_pix = (BEAM_FWHM_ARCMIN / 2.355) / pixel_arcmin
+    print(f"Beam sigma: {beam_sigma_pix:.2f} pixels")
+    
+    # ===== STEP 3: Average projections per galaxy =====
+    b_avg = (b_xy + b_yz + b_zx) / 3.0
+    tau_avg = (tau_xy + tau_yz + tau_zx) / 3.0
+    
+    # ===== STEP 4: Mass binning + per-galaxy CAP =====
+    log_m_halo = np.log10(m_halo)
+    
+    fig_prof, ax_prof = plt.subplots(figsize=(8, 6))
+    fig_maps, axes_maps = plt.subplots(1, 3, figsize=(15, 5))
+    
+    profile_results = {}
+    
+    for k, ((lo, hi), label, color) in enumerate(zip(MASS_BIN_EDGES, MASS_BIN_LABELS, MASS_BIN_COLORS)):
+        mask = (log_m_halo >= lo) & (log_m_halo < hi)
+        idx = np.where(mask)[0]
+        n_in_bin = len(idx)
+        print(f"\nBin {k}: {label}, N={n_in_bin} galaxies")
+        
+        # ===== Per-galaxy CAP (with beam smoothing) =====
+        n_apertures = len(THETA_D_ARCMIN)
+        cap_per_galaxy = np.zeros((n_in_bin, n_apertures))
+        
+        for j, gi in enumerate(idx):
+            b_smooth = gaussian_filter(b_avg[gi], beam_sigma_pix)
+            b_uk = b_smooth * T_CMB_UK
+            for a, theta_d in enumerate(THETA_D_ARCMIN):
+                cap_per_galaxy[j, a] = cap_scalar(b_uk, pixel_arcmin, theta_d)
+        
+        # Mean + standard error
+        mean_prof = cap_per_galaxy.mean(axis=0)
+        se_prof = cap_per_galaxy.std(axis=0) / np.sqrt(n_in_bin)
+        
+        # Save for output
+        profile_results[label] = {
+            'mean': mean_prof,
+            'se': se_prof,
+            'n': n_in_bin,
+            'theta_d': THETA_D_ARCMIN,
+        }
+        
+        # Plot with error bars
+        ax_prof.errorbar(THETA_D_ARCMIN, mean_prof, yerr=se_prof,
+                         marker='o', label=f"{label} (N={n_in_bin})",
+                         color=color, capsize=3)
+        
+        # ===== Stacked maps for visual =====
+        b_stack = np.mean(b_avg[idx], axis=0)
+        b_smooth = gaussian_filter(b_stack, beam_sigma_pix)
+        
+        extent_mpc_h = radius_ckpc_h / 1000.0
+        extent = [-extent_mpc_h, extent_mpc_h, -extent_mpc_h, extent_mpc_h]
+        vmax = max(abs(b_smooth.min()), abs(b_smooth.max()))
+        im = axes_maps[k].imshow(b_smooth, extent=extent, origin='lower',
+                                  cmap='RdBu_r', vmin=-vmax, vmax=vmax)
+        axes_maps[k].set_title(f"{label}\n(N={n_in_bin})", fontsize=11)
+        axes_maps[k].set_xlabel('Mpc/h')
+        axes_maps[k].set_ylabel('Mpc/h')
+        plt.colorbar(im, ax=axes_maps[k])
+    
+    # Finalize profile plot
+    ax_prof.axhline(0, color='k', lw=0.5)
+    ax_prof.set_xlabel(r"Aperture radius $\theta_d$ [arcmin]")
+    ax_prof.set_ylabel(r"$T_{\rm kSZ}(\theta_d)$ [$\mu$K $\cdot$ pixel$^2$]")
+    ax_prof.set_title(f"kSZ CAP profile (combined 27 CV sims, N={n_total} galaxies, z={redshift:.2f})")
+    ax_prof.legend()
+    ax_prof.grid(True, alpha=0.3)
+    fig_prof.tight_layout()
+    fig_prof.savefig(os.path.join(OUTPUT_BASE, "ksz_profile_combined.png"), dpi=130, bbox_inches='tight')
+    plt.close(fig_prof)
+    print(f"\nSaved {OUTPUT_BASE}/ksz_profile_combined.png")
+    
+    # Finalize stacked maps
+    fig_maps.suptitle(f"Stacked kSZ maps (combined 27 CV sims, beam-smoothed)", fontsize=13)
+    fig_maps.tight_layout()
+    fig_maps.savefig(os.path.join(OUTPUT_BASE, "stacked_maps_combined.png"), dpi=130, bbox_inches='tight')
+    plt.close(fig_maps)
+    print(f"Saved {OUTPUT_BASE}/stacked_maps_combined.png")
+    
+    # Save profile data
+    np.savez(os.path.join(OUTPUT_BASE, "profiles_combined.npz"),
+             theta_d_arcmin=THETA_D_ARCMIN,
+             low_mass_mean=profile_results[MASS_BIN_LABELS[0]]['mean'],
+             low_mass_se=profile_results[MASS_BIN_LABELS[0]]['se'],
+             low_mass_n=profile_results[MASS_BIN_LABELS[0]]['n'],
+             mid_mass_mean=profile_results[MASS_BIN_LABELS[1]]['mean'],
+             mid_mass_se=profile_results[MASS_BIN_LABELS[1]]['se'],
+             mid_mass_n=profile_results[MASS_BIN_LABELS[1]]['n'],
+             high_mass_mean=profile_results[MASS_BIN_LABELS[2]]['mean'],
+             high_mass_se=profile_results[MASS_BIN_LABELS[2]]['se'],
+             high_mass_n=profile_results[MASS_BIN_LABELS[2]]['n'],
+             redshift=redshift,
+             n_total=n_total)
+    print(f"Saved {OUTPUT_BASE}/profiles_combined.npz")
+
+
+if __name__ == "__main__":
+    main()

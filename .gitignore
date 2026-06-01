@@ -1,27 +1,17 @@
+# Large data files — these stay on scratch only
+outputs/
+outputs_1p/
+*.npz
+*.hdf5
+
+# Log files
+*.log
+slurm-*.out
+run_all_*.log
+
 # Python
 __pycache__/
 *.pyc
-*.pyo
-.ipynb_checkpoints/
-.Python
-*.egg-info/
 
-# Outputs and data
-outputs/
-*.hdf5
-*.npy
-*.npz
-*.fits
-
-# OS
+# OS junk
 .DS_Store
-Thumbs.db
-
-# Editor
-.vscode/
-.cursor/
-
-# Environment
-.env
-venv/
-env/
